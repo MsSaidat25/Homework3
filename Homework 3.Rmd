@@ -1,0 +1,243 @@
+---
+title: "Homework 3"
+author: "Saheedat Olasumbo Abbas"
+date: "2025-10-26"
+
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Smoothing by bin means (bin depth = 3)
+```{r}
+age <- c(13, 15, 16, 16, 19, 20, 20, 21, 22, 22, 25, 25, 25, 25, 30,
+33, 33, 35, 35, 35, 35, 36, 40, 45, 46, 52, 70)
+length(age)
+summary(age)
+
+bin_depth <- 3
+stopifnot(length(age) %% bin_depth == 0)
+n_bins <- length(age) / bin_depth
+
+# Indices for bins
+
+bins <- split(seq_along(age), rep(1:n_bins, each = bin_depth))
+
+# Compute bin means and smoothed vector
+
+bin_means <- sapply(bins, function(idx) mean(age[idx]))
+smoothed <- unlist(mapply(function(idx, m) rep(m, length(idx)), bins, bin_means))
+
+# Show original vs smoothed (first few bins for illustration)
+
+data.frame(
+idx = 1:length(age),
+original = age,
+bin = rep(1:n_bins, each = bin_depth),
+bin_mean = rep(round(bin_means, 3), each = bin_depth),
+smoothed = round(smoothed, 3)
+)
+
+```
+#Outliers via the IQR rule
+
+```{r}
+Q1 <- quantile(age, 0.25)
+Q3 <- quantile(age, 0.75)
+IQR_val <- IQR(age)
+lower_fence <- Q1 - 1.5 * IQR_val
+upper_fence <- Q3 + 1.5 * IQR_val
+outliers <- age[age < lower_fence | age > upper_fence]
+
+list(Q1 = Q1, Q3 = Q3, IQR = IQR_val,
+lower_fence = lower_fence, upper_fence = upper_fence,
+outliers = outliers)
+
+```
+#Min–max normalization of age = 35 to [0, 1]
+```{r}
+x <- 35
+min_age <- min(age); max_age <- max(age)
+minmax_0_1 <- (x - min_age) / (max_age - min_age)
+minmax_0_1
+
+```
+#Z-score normalization of age = 35
+
+```{r}
+mu <- mean(age)
+sigma <- sd(age)
+z_35 <- (x - mu) / sigma
+c(mean = mu, sd = sigma, z_35 = z_35)
+
+```
+#Decimal scaling normalization of age = 35
+
+```{r}
+j <- ceiling(log10(max(abs(age))))
+decimal_35 <- x / (10^j)
+c(j = j, decimal_scaled_35 = decimal_35)
+
+```
+#Question 2: Function for Min–Max Normalization to an Arbitrary Range
+
+```{r}
+foo <- function(a, min_new, max_new) {
+stopifnot(is.numeric(a), is.numeric(min_new), is.numeric(max_new))
+if (length(a) == 0) return(numeric())
+a_min <- min(a, na.rm = TRUE)
+a_max <- max(a, na.rm = TRUE)
+if (a_max == a_min) {
+# All values identical → map them to the midpoint of the new range
+return(rep((min_new + max_new)/2, length(a)))
+}
+( (a - a_min) / (a_max - a_min) ) * (max_new - min_new) + min_new
+}
+
+# Example
+
+foo_0_1 <- foo(age, 0, 1)
+foo_10_20 <- foo(age, 10, 20)
+head(data.frame(age, to_0_1 = round(foo_0_1, 4), to_10_20 = round(foo_10_20, 2)))
+
+```
+#Q3: Information Gain
+
+```{r}
+library(dplyr)
+library(tibble)
+
+# Data (from the table)
+df <- tribble(
+  ~department, ~age,    ~salary,    ~status, ~count,
+  "sales",     "31_35", "46K_50K",  "senior", 30,
+  "sales",     "26_30", "26K_30K",  "junior", 40,
+  "sales",     "31_35", "31K_35K",  "junior", 40,
+  "systems",   "21_25", "46K_50K",  "junior", 20,
+  "systems",   "31_35", "66K_70K",  "senior", 5,
+  "systems",   "26_30", "46K_50K",  "junior", 3,
+  "systems",   "41_45", "66K_70K",  "senior", 3,
+  "marketing", "36_40", "46K_50K",  "senior", 10,
+  "marketing", "31_35", "41K_45K",  "junior", 4,
+  "secretary", "46_50", "36K_40K",  "senior", 4,
+  "secretary", "26_30", "26K_30K",  "junior", 6
+)
+
+entropy <- function(counts) {
+  p <- counts / sum(counts)
+  p <- p[p > 0]
+  -sum(p * log2(p))
+}
+
+split_entropy <- function(data, attr) {
+  groups <- split(data, data[[attr]])
+  total <- sum(data$count)
+  sum(sapply(groups, function(g) {
+    w <- sum(g$count) / total
+    class_counts <- tapply(g$count, g$status, sum)
+    w * entropy(class_counts)
+  }))
+}
+
+info_gain <- function(data, attr) {
+  overall_counts <- tapply(data$count, data$status, sum)
+  H <- entropy(overall_counts)
+  H - split_entropy(data, attr)
+}
+
+#Root selection 
+attrs <- c("department", "age", "salary")
+ig_root <- sapply(attrs, function(a) info_gain(df, a))
+best_root <- names(which.max(ig_root))
+
+cat("Root attribute:", best_root, "\n")
+print(round(ig_root, 5))
+
+# Second level per branch 
+remaining_attrs <- setdiff(attrs, best_root)
+
+best_child_split <- function(data, root_attr, branch_value, remaining_attrs) {
+  subset <- data %>% filter(.data[[root_attr]] == branch_value)
+  class_counts <- tapply(subset$count, subset$status, sum)
+  if (length(class_counts[class_counts > 0]) <= 1) {
+    return(list(pure = TRUE, best_attr = NA, igs = setNames(numeric(0), character(0))))
+  }
+  igs <- sapply(remaining_attrs, function(a) info_gain(subset, a))
+  list(pure = FALSE, best_attr = names(which.max(igs)), igs = igs)
+}
+
+branches <- unique(df[[best_root]])
+second_level <- lapply(branches, function(bv) {
+  list(branch_value = bv,
+       result = best_child_split(df, best_root, bv, remaining_attrs))
+})
+
+cat("\nSecond-level choices per", best_root, "branch:\n")
+for (s in second_level) {
+  bv <- s$branch_value
+  res <- s$result
+  cat("\n- Branch:", best_root, "=", bv, "\n")
+  if (isTRUE(res$pure)) {
+    cat("  Node is pure (no split needed)\n")
+  } else {
+    cat("  Best second-level attribute:", res$best_attr, "\n")
+    print(round(res$igs, 5))
+  }
+}
+
+```
+
+#Question4: If–Then Rules Derived from the Two-Level Tree
+```{r}
+build_rules <- function(data, root_attr, second_level_info) {
+  rules <- list()
+  for (s in second_level_info) {
+    bv <- s$branch_value
+    subset_root <- data %>% filter(.data[[root_attr]] == bv)
+
+    if (isTRUE(s$result$pure)) {
+      counts <- tapply(subset_root$count, subset_root$status, sum)
+      majority <- names(which.max(counts))
+      rules[[length(rules) + 1]] <- list(
+        conditions = setNames(list(bv), root_attr),
+        class = majority
+      )
+    } else {
+      child_attr <- s$result$best_attr
+      child_vals <- unique(subset_root[[child_attr]])
+      for (cv in child_vals) {
+        subset_child <- subset_root %>% filter(.data[[child_attr]] == cv)
+        if (nrow(subset_child) == 0) next
+        counts <- tapply(subset_child$count, subset_child$status, sum)
+        counts[is.na(counts)] <- 0
+        if (sum(counts) == 0) next
+        majority <- names(which.max(counts))
+        rules[[length(rules) + 1]] <- list(
+          conditions = c(setNames(list(bv), root_attr),
+                         setNames(list(cv), child_attr)),
+          class = majority
+        )
+      }
+    }
+  }
+  rules
+}
+
+rules <- build_rules(df, best_root, second_level)
+
+print_rule <- function(r) {
+  conds <- paste0(names(r$conditions), " = ", unlist(r$conditions), collapse = " AND ")
+  paste0("IF ", conds, " THEN status = ", r$class)
+}
+
+cat("\nDerived two-level rules:\n")
+cat(paste0("* ", vapply(rules, print_rule, character(1)), collapse = "\n"))
+cat("\n")
+
+```
+
+
